@@ -65,6 +65,17 @@ test('builds a tensor scene sized from real dimensions', () => {
     assert.strictEqual(scene.downsampled, true);
 });
 
+test('carries dataflow edges and real-size labels', () => {
+    const scene = transformerScene({ n_layers: 6, n_heads: 6, n_embd: 384, n_vocab: 50257 });
+    // Edges are pairs of vertices; the `along` param has one value per vertex.
+    assert.ok(scene.edges.positions.length > 0);
+    assert.strictEqual(scene.edges.along.length, scene.edges.positions.length / 3);
+    // Labels state the *true* dimensions, not the downsampled cell counts.
+    assert.ok(scene.labels.length >= 4);
+    assert.ok(scene.labels.some((l) => l.text.includes('384')));
+    assert.ok(scene.labels.some((l) => l.text.includes('W_mlp')));
+});
+
 test('depth scales with the layer count', () => {
     const shallow = transformerScene({ n_layers: 4, n_heads: 8, n_embd: 512 });
     const deep = transformerScene({ n_layers: 34, n_heads: 16, n_embd: 3072 });

@@ -4,13 +4,13 @@
 // Netron lays any model out as a clean 2D graph. This adds a second, opt-in
 // rendering that treats the model's *tensors as the 3D objects*: each weight
 // matrix and activation is a grid of cells at its real (downsampled) dimensions,
-// arranged to show the data flow up through the network — the way llm-viz draws
-// a transformer, but sized from this model's own numbers and rendered from our
-// own WebGL.
+// connected by dataflow lines with a travelling pulse, and labelled with its
+// true size — the way llm-viz draws a transformer, but sized from this model's
+// own numbers and rendered from our own WebGL.
 //
-// It is deliberately NOT a general graph-to-3D layout (which reads worse than
-// 2D). It detects a *family* and draws a purpose-built volumetric scene for it;
-// anything unrecognised returns false so the caller keeps Netron's 2D graph.
+// Not a general graph-to-3D layout (which reads worse than 2D). It detects a
+// *family* and draws a purpose-built scene; anything unrecognised returns false
+// so the caller keeps Netron's 2D graph.
 
 import { createEngine } from './netron3d-webgl.js';
 
@@ -52,16 +52,10 @@ netron3d.detect = (graph, label) => {
 };
 
 // --- the transformer scene ---------------------------------------------------
-//
-// Every tensor is a grid of cells. Real dimensions are downsampled to a legible
-// number of cells per axis (a 3072-wide matrix would be a wall); the caption
-// says so, and the *shape* — which matrix is tall, which is wide, how the heads
-// stack — is preserved. Coordinates: Y is up (the flow), X is width/features,
-// Z is depth (tokens / heads).
 
 const CAP = { dmodel: 16, seq: 8, dhead: 8, dff: 16, vocab: 16 };
-const CELL = 0.72;   // cube size; step between cells is 1
-const GAP = 4;       // space between the residual spine and the side blocks
+const CELL = 0.72;
+const GAP = 4;
 
 const COLOR = {
     embed: [0.35, 0.80, 0.45],
@@ -69,14 +63,11 @@ const COLOR = {
     qkv: [0.25, 0.55, 0.95],
     scores: [0.20, 0.85, 0.90],
     mlp: [0.70, 0.45, 0.95],
+    flow: [0.55, 0.90, 0.85],
 };
 
-// A little smooth variation per cell, so a slab reads as data rather than a
-// flat painted block. Purely visual — we do not have the real weights loaded.
 const shimmer = (r, c) => 0.68 + 0.32 * (0.5 + 0.5 * Math.sin(r * 0.7) * Math.cos(c * 0.9));
 
-// Emit an R×C grid of cells into `acc`, starting at `base`, stepping `u` per
-// column and `v` per row (both length-3 world vectors).
 function addSlab(acc, rows, cols, base, u, v, color) {
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -97,60 +88,100 @@ netron3d.transformerScene = (dims) => {
         dmodel: Number(d.n_embd) || 0,
         heads: Number(d.n_heads) || 0,
         layers: Number(d.n_layers) || 0,
+        vocab: Number(d.n_vocab) || 0,
     };
     const DM = Math.min(real.dmodel || 12, CAP.dmodel);
     const SEQ = CAP.seq;
     const DH = Math.min(real.dmodel && real.heads ? Math.round(real.dmodel / real.heads) : 8, CAP.dhead);
     const DF = Math.min(real.dmodel ? real.dmodel * 4 : 16, CAP.dff);
     const VOC = CAP.vocab;
-
-    // How many layer bands to actually draw. Scales with real depth so a deep
-    // stack looks deep, capped so a 96-layer model stays legible; the caption
-    // always states the true count.
     const shown = Math.min(real.layers || 6, 12);
     const BAND = DM + 7;
 
     const acc = { offsets: [], scales: [], colors: [] };
+    const edges = { positions: [], colors: [], along: [] };
+    const labels = [];
     const X = [1, 0, 0];
     const Y = [0, 1, 0];
     const Z = [0, 0, 1];
-
     const centered = (n) => -n / 2;
+
+    // A dataflow edge, oriented source → destination (the pulse runs 0 → 1).
+    const addEdge = (p0, p1) => {
+        edges.positions.push(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]);
+        edges.colors.push(...COLOR.flow, ...COLOR.flow);
+        edges.along.push(0, 1);
+    };
+
+    const attnX = centered(DM) - GAP - DH;
+    const mlpX = DM / 2 + GAP;
+    const spine = (y) => [0, y, 0];
+    const attnCenter = (y) => [attnX + DH / 2, y + DM / 2, 0];
+    const mlpCenter = (y) => [mlpX + DF / 2, y + DM / 2, 1.5];
 
     // Token embedding at the base.
     addSlab(acc, SEQ, DM, [centered(DM), -BAND, centered(SEQ)], X, Z, COLOR.embed);
+    const embedC = [0, -BAND, 0];
 
     for (let b = 0; b < shown; b++) {
         const y = b * BAND;
-        // Residual stream: a horizontal seq × d_model slab (the spine).
+        // Residual stream: the horizontal seq × d_model spine.
         addSlab(acc, SEQ, DM, [centered(DM), y, centered(SEQ)], X, Z, COLOR.residual);
-
-        // Attention: Q, K, V weight matrices (d_model rows × d_head cols),
-        // vertical, stacked in depth, on the −X side.
-        const attnX = centered(DM) - GAP - DH;
-        [-2.5, 0, 2.5].forEach((dz) => {
-            addSlab(acc, DM, DH, [attnX, y + 1, dz], X, Y, COLOR.qkv);
-        });
-        // The attention score matrix (seq × seq), above the QKV.
+        // Attention: Q, K, V weight matrices stacked by head; the score grid above.
+        [-2.5, 0, 2.5].forEach((dz) => addSlab(acc, DM, DH, [attnX, y + 1, dz], X, Y, COLOR.qkv));
         addSlab(acc, SEQ, SEQ, [attnX, y + DM + 2, 0], X, Y, COLOR.scores);
-
-        // MLP: up-projection (d_model × d_ff) and down-projection, vertical,
-        // on the +X side.
-        const mlpX = DM / 2 + GAP;
+        // MLP: up- and down-projection matrices.
         addSlab(acc, DM, DF, [mlpX, y + 1, -1.5], X, Y, COLOR.mlp);
         addSlab(acc, DF, DM, [mlpX, y + 1, DF + 1], X, Y, COLOR.mlp);
+
+        // Dataflow: up the residual spine, and the read/write of each sublayer.
+        if (b === 0) {
+            addEdge(embedC, spine(0));
+        } else {
+            addEdge(spine((b - 1) * BAND), spine(y));
+        }
+        addEdge(spine(y), attnCenter(y));      // residual → attention (read)
+        addEdge(attnCenter(y), spine(y + 2));  // attention → residual (write)
+        addEdge(spine(y), mlpCenter(y));       // residual → MLP
+        addEdge(mlpCenter(y), spine(y + 2));   // MLP → residual
     }
 
-    // Unembedding at the top.
-    addSlab(acc, VOC, DM, [centered(DM), shown * BAND, centered(VOC)], X, Z, COLOR.embed);
+    const topY = shown * BAND;
+    addSlab(acc, VOC, DM, [centered(DM), topY, centered(VOC)], X, Z, COLOR.embed);
+    addEdge(spine((shown - 1) * BAND), spine(topY));
+    const unembedC = [0, topY, 0];
+
+    // Size labels — the *real* dimensions, not the downsampled cell counts, so
+    // the true tensor sizes are legible. Only emitted when the dims are known.
+    const exact = real.dmodel > 0;
+    if (exact) {
+        const dhead = real.heads ? Math.round(real.dmodel / real.heads) : null;
+        const dff = real.dmodel * 4;
+        const voc = real.vocab ? real.vocab.toLocaleString() : 'vocab';
+        labels.push({ pos: spine(0), text: `residual · seq × ${real.dmodel}` });
+        labels.push({ pos: attnCenter(0), text: `Wq·k·v · ${real.dmodel}${dhead ? ` × ${dhead}` : ''}` });
+        labels.push({ pos: mlpCenter(0), text: `W_mlp · ${real.dmodel} × ${dff}` });
+        labels.push({ pos: embedC, text: `embedding · ${voc} × ${real.dmodel}` });
+        labels.push({ pos: unembedC, text: `unembedding · ${real.dmodel} × ${voc}` });
+    } else {
+        labels.push({ pos: spine(0), text: 'residual stream' });
+        labels.push({ pos: attnCenter(0), text: 'Q · K · V' });
+        labels.push({ pos: mlpCenter(0), text: 'MLP' });
+    }
 
     const height = (shown + 1) * BAND;
     return {
         offsets: new Float32Array(acc.offsets),
         scales: new Float32Array(acc.scales),
         colors: new Float32Array(acc.colors),
+        edges: {
+            positions: new Float32Array(edges.positions),
+            colors: new Float32Array(edges.colors),
+            along: new Float32Array(edges.along),
+        },
+        labels,
         target: [0, height / 2 - BAND / 2, 0],
-        distance: Math.max(height, DM + 2 * (GAP + DF)) * 1.15,
+        distance: Math.max(height, DM + 2 * (GAP + DF)) * 1.2,
         cells: acc.offsets.length / 3,
         downsampled:
             (real.dmodel > CAP.dmodel) ||
@@ -168,11 +199,15 @@ netron3d._css = `
   .n3d-canvas{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
   .n3d-canvas:active{cursor:grabbing}
   .n3d-caption{position:absolute;top:10px;left:12px;font-size:12px;line-height:1.5;
-    z-index:2;pointer-events:none}
+    z-index:3;pointer-events:none}
   .n3d-caption b{color:#e6edf3} .n3d-caption .sub{color:#8b949e}
   .n3d-legend{position:absolute;bottom:10px;left:12px;font-size:11px;color:#8b949e;
-    z-index:2;pointer-events:none;line-height:1.7}
+    z-index:3;pointer-events:none;line-height:1.7}
   .n3d-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+  .n3d-labels{position:absolute;inset:0;z-index:2;pointer-events:none;overflow:hidden}
+  .n3d-label{position:absolute;left:0;top:0;font-size:10px;color:#e6edf3;white-space:nowrap;
+    background:rgba(13,17,23,.72);border:1px solid #30363d;border-radius:4px;padding:1px 5px;
+    transform:translate(-9999px,-9999px);will-change:transform}
   .n3d-fallback{padding:1rem;color:#8b949e;font-size:12px}
 `;
 
@@ -198,7 +233,6 @@ netron3d.families.transformer = {
         const doc = element.ownerDocument || document;
         netron3d._ensureStyle(doc);
 
-        // Tear down a previous scene on this element before drawing another.
         if (element._netron3d) {
             element._netron3d.dispose();
             element._netron3d = null;
@@ -225,7 +259,33 @@ netron3d.families.transformer = {
             return false;
         }
         engine.setInstances(scene);
+        engine.setLines(scene.edges);
         element._netron3d = engine;
+
+        // Size labels, pinned to their tensors each frame by projecting the 3D
+        // anchor to the screen.
+        const labelLayer = doc.createElement('div');
+        labelLayer.className = 'n3d-labels';
+        root.appendChild(labelLayer);
+        const labelEls = scene.labels.map((lb) => {
+            const el = doc.createElement('div');
+            el.className = 'n3d-label';
+            el.textContent = lb.text;
+            labelLayer.appendChild(el);
+            return el;
+        });
+        engine.onFrame((project) => {
+            for (let i = 0; i < scene.labels.length; i++) {
+                const p = project(scene.labels[i].pos);
+                const el = labelEls[i];
+                if (!p.visible) {
+                    el.style.display = 'none';
+                    continue;
+                }
+                el.style.display = 'block';
+                el.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
+            }
+        });
 
         let sub;
         if (exact) {
@@ -243,7 +303,7 @@ netron3d.families.transformer = {
             sub = 'decoder-only transformer — illustrative dimensions';
         }
         const note = scene.downsampled
-            ? '<br><span class="sub">dimensions downsampled to cells · drag to rotate, scroll to zoom</span>'
+            ? '<br><span class="sub">cells downsampled · labels show true sizes · drag to rotate, scroll to zoom</span>'
             : '<br><span class="sub">drag to rotate, scroll to zoom</span>';
 
         const caption = doc.createElement('div');
@@ -260,7 +320,8 @@ netron3d.families.transformer = {
             swatch(COLOR.qkv, 'Q·K·V') + ' &nbsp; ' +
             swatch(COLOR.scores, 'attention') + ' &nbsp; ' +
             swatch(COLOR.mlp, 'MLP') + ' &nbsp; ' +
-            swatch(COLOR.embed, 'embed / unembed');
+            swatch(COLOR.embed, 'embed / unembed') + ' &nbsp; ' +
+            swatch(COLOR.flow, 'dataflow');
         root.appendChild(legend);
 
         return true;

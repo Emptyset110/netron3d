@@ -30,12 +30,33 @@ answer for it.
 
 Founding slice, added on top of the Netron fork:
 
-- `source/netron3d.js` — family detection from a parsed graph's op signature,
-  and a self-contained transformer 3D scene (CSS 3D, drag to rotate, no external
-  asset). `detect(graph)` → `{ family, dims }`; `render(element, spec)` → draws
+- `source/netron3d-webgl.js` — a tiny WebGL2 instanced-cube engine (one draw
+  call, orbit camera), dependency-free.
+- `source/netron3d.js` — the **transformer scene**: every tensor is a *grid of
+  cells* at its real (downsampled) dimensions — the residual stream, the Q·K·V
+  weight matrices and attention scores, the MLP projections, embedding and
+  unembedding — laid out to show the flow up through the stack. The tensors ARE
+  the geometry, not panels in perspective. `detect(graph)` → `{ family, dims }`;
+  `transformerScene(dims)` → instance buffers; `render(element, spec)` → draws
   it, or returns `false` so the caller falls back to Netron's 2D graph.
-- `test/netron3d.test.mjs` — detection logic (`node test/netron3d.test.mjs`).
+- `test/netron3d.test.mjs` — detection + scene logic (`node test/netron3d.test.mjs`).
 - `test/netron3d.html` — a standalone browser demo of the renderer.
+
+## Design: tensors as 3D cells
+
+The point is not to tilt a 2D diagram into 3D — it is to draw the *kernels*. Each
+weight matrix and activation is a grid of cells sized by the model's real
+dimensions (downsampled to a legible cell budget; the caption states the true
+numbers). For a transformer:
+
+- **residual stream** — the central `seq × d_model` spine the data flows up;
+- **attention** — the `d_model × d_head` Q, K and V weight matrices stacked by
+  head, and the `seq × seq` score grid;
+- **MLP** — the `d_model × d_ff` up- and down-projection matrices;
+- **embedding / unembedding** — top and bottom.
+
+Depth scales with the layer count, so a 34-layer model reads as deeper than a
+6-layer one. Rendered in WebGL2 with instanced cubes and an orbit camera.
 
 Roadmap:
 
@@ -43,7 +64,9 @@ Roadmap:
 - more families: U-Net, ResNet/CNN, ViT, diffusion U-Net;
 - exact dimensions from the parsed model rather than estimates, and from a
   sibling config where present;
-- a WebGL renderer for scenes that outgrow CSS 3D.
+- load real weights so cells carry actual values, not a structural shimmer;
+- richer per-tensor detail (labels on the wires, activation volumes at a chosen
+  sequence length).
 
 ## Licence
 

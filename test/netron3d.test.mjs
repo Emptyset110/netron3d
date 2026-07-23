@@ -6,7 +6,7 @@
 // demo (test/netron3d.html), not here.
 
 import assert from 'node:assert';
-import { detect, opTypes, render, families } from '../source/netron3d.js';
+import { detect, opTypes, render, families, transformerScene } from '../source/netron3d.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -52,6 +52,23 @@ test('render() returns false for an unknown family (caller falls back to 2D)', (
 test('the transformer family is registered', () => {
     assert.ok(families.transformer);
     assert.strictEqual(families.transformer.name, 'transformer');
+});
+
+test('builds a tensor scene sized from real dimensions', () => {
+    const scene = transformerScene({ n_layers: 34, n_heads: 16, n_embd: 3072 });
+    // Cells are real geometry: three matching buffers of 3 floats each.
+    assert.ok(scene.cells > 1000);
+    assert.strictEqual(scene.offsets.length, scene.cells * 3);
+    assert.strictEqual(scene.offsets.length, scene.scales.length);
+    assert.strictEqual(scene.offsets.length, scene.colors.length);
+    // A 3072-wide model is downsampled to cells; that is stated, not hidden.
+    assert.strictEqual(scene.downsampled, true);
+});
+
+test('depth scales with the layer count', () => {
+    const shallow = transformerScene({ n_layers: 4, n_heads: 8, n_embd: 512 });
+    const deep = transformerScene({ n_layers: 34, n_heads: 16, n_embd: 3072 });
+    assert.ok(deep.shown > shallow.shown, 'a deeper model draws more bands');
 });
 
 process.stdout.write(`\n${passed} passed\n`);

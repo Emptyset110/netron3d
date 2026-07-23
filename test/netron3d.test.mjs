@@ -6,7 +6,7 @@
 // demo (test/netron3d.html), not here.
 
 import assert from 'node:assert';
-import { detect, opTypes, render, families, transformerScene } from '../source/netron3d.js';
+import { detect, opTypes, render, families, transformerScene, cnnScene } from '../source/netron3d.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -38,9 +38,15 @@ test('detects a transformer from the softmax+matmul+norm pattern', () => {
     assert.strictEqual(result.label, 'demo');
 });
 
-test('does not call a plain CNN a transformer', () => {
+test('detects a plain CNN as the cnn family, not a transformer', () => {
     const ops = ['Conv', 'Relu', 'MaxPool', 'Conv', 'Relu', 'Gemm'];
-    assert.strictEqual(detect(ops).family, 'unknown');
+    const result = detect(ops);
+    assert.strictEqual(result.family, 'cnn');
+    assert.strictEqual(result.dims.n_stages, 2);
+});
+
+test('leaves an architecture with neither attention nor conv unknown', () => {
+    assert.strictEqual(detect(['Relu', 'Add', 'Gemm']).family, 'unknown');
 });
 
 test('render() returns false for an unknown family (caller falls back to 2D)', () => {
@@ -74,6 +80,15 @@ test('carries dataflow edges and real-size labels', () => {
     assert.ok(scene.labels.length >= 4);
     assert.ok(scene.labels.some((l) => l.text.includes('384')));
     assert.ok(scene.labels.some((l) => l.text.includes('W_mlp')));
+});
+
+test('the cnn family builds a funnel of feature-map volumes', () => {
+    const scene = cnnScene({ n_stages: 5 });
+    assert.ok(scene.cells > 100);
+    assert.strictEqual(scene.stages, 5);
+    assert.ok(scene.labels.some((l) => l.text === 'input'));
+    assert.ok(scene.labels.some((l) => l.text === 'head'));
+    assert.strictEqual(scene.illustrative, true);
 });
 
 test('depth scales with the layer count', () => {

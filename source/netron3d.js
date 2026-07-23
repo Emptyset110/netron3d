@@ -43,12 +43,20 @@ netron3d.detect = (graph, label) => {
         o.includes('layernorm') || o.includes('rmsnorm') || o.includes('skiplayernorm'));
 
     const isTransformer = attention > 0 || (softmax > 0 && matmul > 1 && norm > 1);
-    if (!isTransformer) {
-        return { family: 'unknown', dims: {}, label: label || '' };
+    if (isTransformer) {
+        const layers = Math.max(attention, Math.round(norm / 2)) || 0;
+        const dims = layers > 0 ? { n_layers: layers, estimated: true } : {};
+        return { family: 'transformer', dims, label: label || '' };
     }
-    const layers = Math.max(attention, Math.round(norm / 2)) || 0;
-    const dims = layers > 0 ? { n_layers: layers, estimated: true } : {};
-    return { family: 'transformer', dims, label: label || '' };
+
+    // A convolutional net: Conv ops and no attention. The stage count is
+    // estimated from how many convs there are.
+    const conv = count((o) => o.includes('conv'));
+    if (conv > 0) {
+        const stages = Math.max(2, Math.min(conv, 7));
+        return { family: 'cnn', dims: { n_stages: stages, estimated: true }, label: label || '' };
+    }
+    return { family: 'unknown', dims: {}, label: label || '' };
 };
 
 // --- the transformer scene ---------------------------------------------------
@@ -190,6 +198,72 @@ netron3d.transformerScene = (dims) => {
     };
 };
 
+// --- the convolutional scene -------------------------------------------------
+//
+// A different 3D interpretation entirely: not a stack of matrices but a funnel
+// of feature-map *volumes* that shrink spatially and deepen in channels as the
+// data flows through — the shape that makes a CNN a CNN. Each stage is a stack
+// of channel slices (H × W grids). Feature-map shapes are illustrative until
+// read from the parsed model, and the caption says so.
+
+const CNN_STAGE_GAP = 14;
+
+const cnnColor = (t) => [0.28 + t * 0.40, 0.58 - t * 0.10, 0.95 - t * 0.28];
+
+netron3d.cnnScene = (dims) => {
+    const d = dims || {};
+    const stages = Math.max(2, Math.min(Number(d.n_stages) || 5, 7));
+
+    const acc = { offsets: [], scales: [], colors: [] };
+    const edges = { positions: [], colors: [], along: [] };
+    const labels = [];
+    const addEdge = (p0, p1) => {
+        edges.positions.push(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]);
+        edges.colors.push(...COLOR.flow, ...COLOR.flow);
+        edges.along.push(0, 1);
+    };
+
+    const centers = [];
+    let maxH = 0;
+    for (let s = 0; s < stages; s++) {
+        const t = stages > 1 ? s / (stages - 1) : 0;
+        const H = Math.max(3, Math.round(9 - t * 5));   // spatial shrinks
+        const W = H;
+        const C = Math.min(2 + Math.round(t * 6), 8);   // channel slices grow
+        const cx = s * CNN_STAGE_GAP;
+        for (let ch = 0; ch < C; ch++) {
+            const base = [cx - W / 2, -H / 2, (ch - (C - 1) / 2) * 1.7];
+            addSlab(acc, H, W, base, [1, 0, 0], [0, 1, 0], cnnColor(t));
+        }
+        const center = [cx, 0, 0];
+        centers.push(center);
+        if (s > 0) {
+            addEdge(centers[s - 1], center);
+        }
+        const text = s === 0 ? 'input' : (s === stages - 1 ? 'head' : `conv stage ${s}`);
+        labels.push({ pos: [cx, H / 2 + 2.5, 0], text });
+        maxH = Math.max(maxH, H);
+    }
+
+    const width = (stages - 1) * CNN_STAGE_GAP;
+    return {
+        offsets: new Float32Array(acc.offsets),
+        scales: new Float32Array(acc.scales),
+        colors: new Float32Array(acc.colors),
+        edges: {
+            positions: new Float32Array(edges.positions),
+            colors: new Float32Array(edges.colors),
+            along: new Float32Array(edges.along),
+        },
+        labels,
+        target: [width / 2, 0, 0],
+        distance: Math.max(width, maxH * 2) * 1.6,
+        cells: acc.offsets.length / 3,
+        stages,
+        illustrative: true,
+    };
+};
+
 // --- rendering ---------------------------------------------------------------
 
 netron3d._styleId = 'netron3d-style';
@@ -226,66 +300,84 @@ const swatch = (rgb, text) => {
     return `<span><i style="background:#${hex}"></i>${text}</span>`;
 };
 
+const escapeHtml = (s) =>
+    String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+// Common plumbing for any family: canvas, engine, screen-pinned labels, caption
+// and legend. `meta` is { label, subtitleHtml, legendHtml }.
+netron3d._mount = (element, scene, meta) => {
+    const doc = element.ownerDocument || document;
+    netron3d._ensureStyle(doc);
+
+    if (element._netron3d) {
+        element._netron3d.dispose();
+        element._netron3d = null;
+    }
+    element.innerHTML = '';
+
+    const root = doc.createElement('div');
+    root.className = 'n3d-root';
+    const canvas = doc.createElement('canvas');
+    canvas.className = 'n3d-canvas';
+    root.appendChild(canvas);
+    element.appendChild(root);
+
+    const engine = createEngine(canvas);
+    if (!engine) {
+        root.innerHTML =
+            '<div class="n3d-fallback">This view needs WebGL2, which is not ' +
+            'available here. Netron\'s 2D graph is the fallback.</div>';
+        return false;
+    }
+    engine.setInstances(scene);
+    engine.setLines(scene.edges);
+    element._netron3d = engine;
+
+    // Labels pinned to their tensors each frame by projecting the 3D anchor.
+    const labelLayer = doc.createElement('div');
+    labelLayer.className = 'n3d-labels';
+    root.appendChild(labelLayer);
+    const labelEls = scene.labels.map((lb) => {
+        const el = doc.createElement('div');
+        el.className = 'n3d-label';
+        el.textContent = lb.text;
+        labelLayer.appendChild(el);
+        return el;
+    });
+    engine.onFrame((project) => {
+        for (let i = 0; i < scene.labels.length; i++) {
+            const p = project(scene.labels[i].pos);
+            const el = labelEls[i];
+            if (!p.visible) {
+                el.style.display = 'none';
+                continue;
+            }
+            el.style.display = 'block';
+            el.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
+        }
+    });
+
+    const caption = doc.createElement('div');
+    caption.className = 'n3d-caption';
+    caption.innerHTML = `<b>${escapeHtml(meta.label)}</b><br>${meta.subtitleHtml}`;
+    root.appendChild(caption);
+
+    const legend = doc.createElement('div');
+    legend.className = 'n3d-legend';
+    legend.innerHTML = meta.legendHtml;
+    root.appendChild(legend);
+
+    return true;
+};
+
 netron3d.families = {};
+
 netron3d.families.transformer = {
     name: 'transformer',
     render(element, spec) {
-        const doc = element.ownerDocument || document;
-        netron3d._ensureStyle(doc);
-
-        if (element._netron3d) {
-            element._netron3d.dispose();
-            element._netron3d = null;
-        }
-        element.innerHTML = '';
-
         const dims = (spec && spec.dims) || {};
         const scene = netron3d.transformerScene(dims);
-        const label = (spec && spec.label) || 'GPT-style transformer';
         const exact = dims.n_layers !== undefined && dims.n_layers !== null;
-
-        const root = doc.createElement('div');
-        root.className = 'n3d-root';
-        const canvas = doc.createElement('canvas');
-        canvas.className = 'n3d-canvas';
-        root.appendChild(canvas);
-        element.appendChild(root);
-
-        const engine = createEngine(canvas);
-        if (!engine) {
-            root.innerHTML =
-                '<div class="n3d-fallback">This view needs WebGL2, which is not ' +
-                'available here. Netron\'s 2D graph is the fallback.</div>';
-            return false;
-        }
-        engine.setInstances(scene);
-        engine.setLines(scene.edges);
-        element._netron3d = engine;
-
-        // Size labels, pinned to their tensors each frame by projecting the 3D
-        // anchor to the screen.
-        const labelLayer = doc.createElement('div');
-        labelLayer.className = 'n3d-labels';
-        root.appendChild(labelLayer);
-        const labelEls = scene.labels.map((lb) => {
-            const el = doc.createElement('div');
-            el.className = 'n3d-label';
-            el.textContent = lb.text;
-            labelLayer.appendChild(el);
-            return el;
-        });
-        engine.onFrame((project) => {
-            for (let i = 0; i < scene.labels.length; i++) {
-                const p = project(scene.labels[i].pos);
-                const el = labelEls[i];
-                if (!p.visible) {
-                    el.style.display = 'none';
-                    continue;
-                }
-                el.style.display = 'block';
-                el.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
-            }
-        });
 
         let sub;
         if (exact) {
@@ -303,28 +395,41 @@ netron3d.families.transformer = {
             sub = 'decoder-only transformer — illustrative dimensions';
         }
         const note = scene.downsampled
-            ? '<br><span class="sub">cells downsampled · labels show true sizes · drag to rotate, scroll to zoom</span>'
-            : '<br><span class="sub">drag to rotate, scroll to zoom</span>';
+            ? 'cells downsampled · labels show true sizes · drag to rotate, scroll to zoom'
+            : 'drag to rotate, scroll to zoom';
 
-        const caption = doc.createElement('div');
-        caption.className = 'n3d-caption';
-        caption.innerHTML =
-            `<b>${String(label).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</b>` +
-            `<br><span class="sub">${sub}</span>${note}`;
-        root.appendChild(caption);
+        return netron3d._mount(element, scene, {
+            label: (spec && spec.label) || 'GPT-style transformer',
+            subtitleHtml: `<span class="sub">${sub}</span><br><span class="sub">${note}</span>`,
+            legendHtml:
+                swatch(COLOR.residual, 'residual') + ' &nbsp; ' +
+                swatch(COLOR.qkv, 'Q·K·V') + ' &nbsp; ' +
+                swatch(COLOR.scores, 'attention') + ' &nbsp; ' +
+                swatch(COLOR.mlp, 'MLP') + ' &nbsp; ' +
+                swatch(COLOR.embed, 'embed / unembed') + ' &nbsp; ' +
+                swatch(COLOR.flow, 'dataflow'),
+        });
+    }
+};
 
-        const legend = doc.createElement('div');
-        legend.className = 'n3d-legend';
-        legend.innerHTML =
-            swatch(COLOR.residual, 'residual') + ' &nbsp; ' +
-            swatch(COLOR.qkv, 'Q·K·V') + ' &nbsp; ' +
-            swatch(COLOR.scores, 'attention') + ' &nbsp; ' +
-            swatch(COLOR.mlp, 'MLP') + ' &nbsp; ' +
-            swatch(COLOR.embed, 'embed / unembed') + ' &nbsp; ' +
-            swatch(COLOR.flow, 'dataflow');
-        root.appendChild(legend);
-
-        return true;
+netron3d.families.cnn = {
+    name: 'cnn',
+    render(element, spec) {
+        const dims = (spec && spec.dims) || {};
+        const scene = netron3d.cnnScene(dims);
+        const sub = `${scene.stages} stages` +
+            (dims.estimated ? ' (estimated from graph)' : '');
+        return netron3d._mount(element, scene, {
+            label: (spec && spec.label) || 'convolutional network',
+            subtitleHtml:
+                `<span class="sub">${sub}</span><br>` +
+                '<span class="sub">feature-map shapes illustrative until read from the ' +
+                'model · drag to rotate, scroll to zoom</span>',
+            legendHtml:
+                swatch(cnnColor(0), 'shallow / large') + ' &nbsp; ' +
+                swatch(cnnColor(1), 'deep / small') + ' &nbsp; ' +
+                swatch(COLOR.flow, 'dataflow'),
+        });
     }
 };
 
@@ -336,5 +441,5 @@ netron3d.render = (element, spec) => {
     return family.render(element, spec);
 };
 
-export const { detect, families, opTypes, render, transformerScene } = netron3d;
+export const { cnnScene, detect, families, opTypes, render, transformerScene } = netron3d;
 export default netron3d;

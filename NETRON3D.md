@@ -39,6 +39,10 @@ Founding slice, added on top of the Netron fork:
   the geometry, not panels in perspective. `detect(graph)` → `{ family, dims }`;
   `transformerScene(dims)` → instance buffers; `render(element, spec)` → draws
   it, or returns `false` so the caller falls back to Netron's 2D graph.
+- a second family, **cnn** — a funnel of feature-map *volumes* that shrink
+  spatially and deepen in channels, a fundamentally different 3D reading from the
+  transformer's block stack. Feature-map shapes are illustrative until read from
+  the parsed model, and the caption says so.
 - `test/netron3d.test.mjs` — detection + scene logic (`node test/netron3d.test.mjs`).
 - `test/netron3d.html` — a standalone browser demo of the renderer.
 
@@ -61,7 +65,7 @@ Depth scales with the layer count, so a 34-layer model reads as deeper than a
 Roadmap:
 
 - wire a **3D toggle into Netron's viewer** (`source/view.js`) beside its 2D graph;
-- more families: U-Net, ResNet/CNN, ViT, diffusion U-Net;
+- more families: U-Net, ViT, diffusion U-Net (transformer and CNN are in);
 - exact dimensions from the parsed model rather than estimates, and from a
   sibling config where present;
 - load real weights so cells carry actual values, not a structural shimmer;

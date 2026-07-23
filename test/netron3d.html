@@ -27,6 +27,7 @@
     <button data-demo="nanogpt">nano-gpt (6 × 6 × 384)</button>
     <button data-demo="unknown">config-less (illustrative)</button>
     <button data-demo="detect">detect from graph ops</button>
+    <button data-demo="cnn">CNN (detect Conv)</button>
   </div>
   <div id="stage3d"></div>
 
@@ -51,6 +52,11 @@
         }
         const spec = detect(ops, 'detected-from-graph');
         netron3d.render(stage, spec);
+        return;
+      }
+      if (key === 'cnn') {
+        const ops = ['Conv','Relu','MaxPool','Conv','Relu','Conv','Relu','Conv','Gemm'];
+        netron3d.render(stage, detect(ops, 'ResNet-ish CNN'));
         return;
       }
       netron3d.render(stage, specs[key]);

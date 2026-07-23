@@ -1,0 +1,57 @@
+// Family detection tests for netron3d.
+//
+//   node test/netron3d.test.mjs
+//
+// Pure logic only — the renderer needs a DOM and is exercised by the browser
+// demo (test/netron3d.html), not here.
+
+import assert from 'node:assert';
+import { detect, opTypes, render, families } from '../source/netron3d.js';
+
+let passed = 0;
+const test = (name, fn) => {
+    fn();
+    passed += 1;
+    process.stdout.write(`ok   ${name}\n`);
+};
+
+test('reads op types from a Netron-style graph', () => {
+    const graph = { nodes: [{ type: { name: 'MatMul' } }, { type: 'Softmax' }] };
+    assert.deepStrictEqual(opTypes(graph), ['matmul', 'softmax']);
+});
+
+test('detects a transformer from an explicit attention op', () => {
+    const result = detect(['MatMul', 'Attention', 'LayerNormalization', 'Gelu']);
+    assert.strictEqual(result.family, 'transformer');
+});
+
+test('detects a transformer from the softmax+matmul+norm pattern', () => {
+    const ops = [];
+    for (let i = 0; i < 6; i++) {
+        ops.push('MatMul', 'Softmax', 'MatMul', 'LayerNormalization', 'LayerNormalization');
+    }
+    const result = detect(ops, 'demo');
+    assert.strictEqual(result.family, 'transformer');
+    // Six norm-pairs → an estimated six layers, marked as estimated.
+    assert.strictEqual(result.dims.n_layers, 6);
+    assert.strictEqual(result.dims.estimated, true);
+    assert.strictEqual(result.label, 'demo');
+});
+
+test('does not call a plain CNN a transformer', () => {
+    const ops = ['Conv', 'Relu', 'MaxPool', 'Conv', 'Relu', 'Gemm'];
+    assert.strictEqual(detect(ops).family, 'unknown');
+});
+
+test('render() returns false for an unknown family (caller falls back to 2D)', () => {
+    // No DOM here; an unknown family must bail out before touching `element`.
+    assert.strictEqual(render(null, { family: 'unknown' }), false);
+    assert.strictEqual(render(null, null), false);
+});
+
+test('the transformer family is registered', () => {
+    assert.ok(families.transformer);
+    assert.strictEqual(families.transformer.name, 'transformer');
+});
+
+process.stdout.write(`\n${passed} passed\n`);

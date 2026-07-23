@@ -1,0 +1,23 @@
+netron3d
+========
+
+netron3d is a fork of Netron (https://github.com/lutzroeder/netron) by Lutz
+Roeder, distributed under the MIT License. Netron's copyright and licence are
+retained in full in the LICENSE file; all additions here are made under the same
+MIT terms.
+
+Netron reads model files (ONNX, TensorFlow, PyTorch, TFLite, and more) and lays
+their computation graph out in 2D. netron3d adds one thing Netron does not have:
+a family-aware 3D renderer. For an architecture it recognises, it draws a
+hand-laid 3D scene sized from the model's own numbers; for anything else it
+leaves Netron's 2D graph untouched, which is the correct rendering for a general
+graph.
+
+Relationship to llm-viz
+-----------------------
+
+netron3d is inspired by llm-viz (https://bbycroft.net/llm, by Brendan Bycroft),
+which renders a transformer beautifully in 3D — but only its own preset demo
+networks, taking no model as input. llm-viz carries no licence, so no part of it
+is copied or derived here. netron3d is an independent implementation of the idea
+"show a real model in 3D", built on Netron's parsing rather than on llm-viz.

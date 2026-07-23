@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>netron3d — demo</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; color: #c9d1d9;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .bar { display: flex; gap: .5rem; padding: .6rem .8rem; align-items: center;
+    border-bottom: 1px solid #30363d; }
+  .bar button { font: inherit; background: #161b22; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 6px; padding: .4rem .7rem; cursor: pointer; }
+  .bar button:hover { border-color: #58a6ff; }
+  #stage3d { width: 100%; height: calc(100vh - 3rem); }
+</style>
+</head>
+<body>
+  <!--
+    Standalone demo for the netron3d renderer, independent of Netron's full
+    viewer. Serve this directory (any static server) and open the page:
+    the buttons render the transformer scene at different sizes, plus the
+    graph-detection path.
+  -->
+  <div class="bar">
+    <span>netron3d demo:</span>
+    <button data-demo="medgemma">MedGemma (34 × 16 × 3072)</button>
+    <button data-demo="nanogpt">nano-gpt (6 × 6 × 384)</button>
+    <button data-demo="unknown">config-less (illustrative)</button>
+    <button data-demo="detect">detect from graph ops</button>
+  </div>
+  <div id="stage3d"></div>
+
+  <script type="module">
+    import netron3d, { detect } from '../source/netron3d.js';
+
+    const stage = document.getElementById('stage3d');
+    const specs = {
+      medgemma: { family: 'transformer', label: 'MedGemma 1.5 4B IT',
+        dims: { n_layers: 34, n_heads: 16, n_embd: 3072 } },
+      nanogpt: { family: 'transformer', label: 'nano-gpt',
+        dims: { n_layers: 6, n_heads: 6, n_embd: 384 } },
+      unknown: { family: 'transformer', label: 'unnamed transformer', dims: {} },
+    };
+
+    const show = (key) => {
+      if (key === 'detect') {
+        // Pretend we parsed a model: an op signature Netron would produce.
+        const ops = [];
+        for (let i = 0; i < 12; i++) {
+          ops.push('MatMul', 'Softmax', 'MatMul', 'LayerNormalization', 'LayerNormalization');
+        }
+        const spec = detect(ops, 'detected-from-graph');
+        netron3d.render(stage, spec);
+        return;
+      }
+      netron3d.render(stage, specs[key]);
+    };
+
+    for (const button of document.querySelectorAll('[data-demo]')) {
+      button.addEventListener('click', () => show(button.dataset.demo));
+    }
+    show('medgemma');
+  </script>
+</body>
+</html>

@@ -1,13 +1,51 @@
+# --- OS / editor ---
 .DS_Store
 .DS_Store?
-.claude
-.eslintcache
-.ruff_cache
-.specify
-.yarn
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# --- build / deps (Netron) ---
 dist/*
 node_modules/*
 test-results/*
 third_party/*
 yarn.lock
+.eslintcache
+.ruff_cache
+.yarn
+.specify
+
+# --- secrets / credentials (never commit) ---
+.env
+.env.*
+*.local
+*.key
+*.pem
+*.p12
+.npmrc
+secrets.*
+*token*
+*secret*
+
+# --- python ---
 *.pyc
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# --- editor / assistant scratch (kept out of this repo) ---
+.cursor/
+.aider*
+.continue/
+
+# --- logs / scratch ---
+*.log
+tmp/
+.cache/
